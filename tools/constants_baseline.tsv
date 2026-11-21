@@ -1,0 +1,3 @@
+# Reviewed existing expressions. Columns: path, rule, expression, reason.
+# Exact occurrences only; never regenerate this file to silence a failure.
+src/engine/core/binary.c	binary-offset	mh_read_u32le ( bytes + 4 )	Binary64 decoding reads the high 32-bit word after its low four bytes; this is primitive byte arithmetic, not a file-format field.

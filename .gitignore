@@ -1,0 +1,6 @@
+/build/
+/assets/*
+!/assets/motor.ico
+/local/
+__pycache__/
+*.pyc

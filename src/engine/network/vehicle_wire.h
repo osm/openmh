@@ -1,0 +1,35 @@
+#ifndef MH_NET_VEHICLE_WIRE_H
+#define MH_NET_VEHICLE_WIRE_H
+
+/* Offsets within the 30-byte detailed body; far bodies have their own yaw. */
+enum vehicle_offset {
+	VEHICLE_STEERING = 2,
+	VEHICLE_WHEEL_SPEED = 3,
+	VEHICLE_RPM = 5,
+	VEHICLE_SLIDE_GEAR = 6,
+	VEHICLE_AUXILIARY = 7,
+	VEHICLE_CODES = 9,
+	VEHICLE_FLAGS = 10,
+	VEHICLE_VARIANTS_FLAGS = 11,
+	VEHICLE_ANGLES = 12,
+	VEHICLE_POSITION = 18
+};
+
+/* Bit positions in the decoded twelve-bit vehicle flags. */
+enum vehicle_flag_shift {
+	VEHICLE_BRAKE_SHIFT = 0,
+	VEHICLE_HORN_SHIFT = 1,
+	VEHICLE_SLIDING_SHIFT = 2,
+	VEHICLE_WHEELSPIN_SHIFT = 3,
+	VEHICLE_HEAVY_BRAKE_SHIFT = 4,
+	VEHICLE_SUPPORT_SHIFT = 5,
+	VEHICLE_ENGINE_BRAKE_SHIFT = 9
+};
+
+#define VEHICLE_PEDAL_FLAG 0x400U
+#define VEHICLE_BELOW_PEDAL_MASK 0x3ffU
+#define VEHICLE_FLAGS_MASK 0xfffU
+
+#define FAR_HEADING_OFFSET 6
+
+#endif

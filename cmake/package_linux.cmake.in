@@ -1,0 +1,71 @@
+cmake_minimum_required(VERSION 3.21)
+
+set(runtime [==[@MH_LINUX_RUNTIME_DIR@]==])
+set(stage "${CPACK_TEMPORARY_DIRECTORY}")
+set(notices "${runtime}/licenses.txt")
+
+if(NOT runtime OR NOT IS_DIRECTORY "${runtime}/bin" OR
+	NOT EXISTS "${notices}" OR IS_DIRECTORY "${notices}")
+	message(FATAL_ERROR
+		"Set MH_LINUX_RUNTIME_DIR to the matching runtime with bin/ and licenses.txt, "
+		"or run scripts/build_docker_linux_amd64")
+endif()
+
+file(SIZE "${notices}" notice_bytes)
+if(NOT notice_bytes)
+	message(FATAL_ERROR "Empty Linux license notices: ${notices}")
+endif()
+
+file(GLOB libraries LIST_DIRECTORIES false "${runtime}/bin/*.so*")
+set(candidates)
+
+foreach(library IN LISTS libraries)
+	get_filename_component(name "${library}" NAME)
+	list(APPEND candidates "${stage}/${name}")
+	configure_file("${library}" "${stage}/${name}" COPYONLY)
+endforeach()
+
+set(programs)
+
+foreach(name openmotor openmotorsv openmotorex)
+	if(EXISTS "${stage}/${name}")
+		list(APPEND programs "${stage}/${name}")
+	endif()
+endforeach()
+
+if(NOT programs)
+	message(FATAL_ERROR "No Linux applications selected for packaging")
+endif()
+
+# Follow project dependencies in the staged image. System drivers own their
+# own dependency trees, which can include different versions of media codecs.
+string(CONCAT project_library "/lib(SDL3|avcodec|avformat|avutil|swresample|"
+	"swscale|crypto|ssl|unshield|z|opus|vpx)\\.so(\\.|$)")
+file(GET_RUNTIME_DEPENDENCIES EXECUTABLES ${programs}
+	POST_INCLUDE_FILES ${candidates} POST_INCLUDE_REGEXES "${project_library}"
+	POST_EXCLUDE_REGEXES ".*"
+	RESOLVED_DEPENDENCIES_VAR resolved UNRESOLVED_DEPENDENCIES_VAR missing)
+if(missing)
+	message(FATAL_ERROR "Unresolved Linux runtime libraries: ${missing}")
+endif()
+
+set(bundled)
+
+foreach(library IN LISTS resolved)
+	get_filename_component(name "${library}" NAME)
+	get_filename_component(directory "${library}" DIRECTORY)
+
+	if(NOT directory STREQUAL stage)
+		message(FATAL_ERROR "Matching runtime must supply ${name} beside the applications")
+	endif()
+	list(APPEND bundled "${name}")
+endforeach()
+
+foreach(library IN LISTS libraries)
+	get_filename_component(name "${library}" NAME)
+	if(NOT name IN_LIST bundled)
+		file(REMOVE "${stage}/${name}")
+	endif()
+endforeach()
+
+configure_file("${notices}" "${stage}/licenses.txt" COPYONLY)

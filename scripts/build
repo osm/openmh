@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+Usage: scripts/build [all|client|server|extractor]
+                     [--platform linux|windows|wasm] [CMake options...]
+
+Build Release applications or the WebAssembly runtime.
+Defaults to all Linux applications in build/linux/.
+  all        all applications supported by the selected platform
+  client     openmotor and shaders
+  server     openmotorsv (no SDL or shader tools required)
+  extractor  openmotorex (no SDL or shader tools required)
+
+Windows cross-builds use --platform windows and write to build/windows/.
+WebAssembly builds use --platform wasm and write to build/wasm/ (Emscripten SDK).
+The browser supports the client and extractor, but not the dedicated server.
+Client builds export browser-runtime/. Set MH_WASM_LICENSE_NOTICES to the
+matching combined license file to also create a release archive. Extractor-only
+builds produce openmotorex.js, openmotorex.wasm and the extraction workers.
+All application selections reuse the selected platform's build directory.
+
+Extra options are passed to CMake when configuring, for example:
+  scripts/build client -DCMAKE_PREFIX_PATH=/path/to/libraries
+  scripts/build all --platform windows -DCMAKE_PREFIX_PATH=/path/to/windows-libs
+  scripts/build client --platform wasm -DCMAKE_PREFIX_PATH=/path/to/wasm-libs
+
+Set CMAKE_BUILD_PARALLEL_LEVEL to limit concurrent build jobs.
+Dependencies must already be installed. Docker provisions them automatically.
+EOF
+}
+
+profile=all
+if [[ $# -gt 0 && $1 != -* ]]; then
+	profile=$1
+	shift
+fi
+
+if [[ $profile == -h || $profile == --help || ${1:-} == --help || ${1:-} == -h ]]; then
+	usage
+	exit 0
+fi
+
+platform=linux
+if [[ ${1:-} == --platform ]]; then
+	if [[ $# -lt 2 || ( $2 != linux && $2 != windows && $2 != wasm ) ]]; then
+		printf 'Use --platform linux, windows or wasm.\n' >&2
+		exit 2
+	fi
+	platform=$2
+	shift 2
+fi
+
+client=OFF
+server=OFF
+extractor=OFF
+configure=(cmake)
+defaults=()
+case "$profile" in
+	all)
+		client=ON
+		server=ON
+		extractor=ON
+		targets=(openmotor openmotorsv openmotorex)
+		binaries=(openmotor openmotorsv openmotorex)
+		;;
+	client)
+		client=ON
+		targets=(openmotor)
+		binaries=(openmotor)
+		;;
+	server)
+		server=ON
+		targets=(openmotorsv)
+		binaries=(openmotorsv)
+		;;
+	extractor)
+		extractor=ON
+		targets=(openmotorex)
+		binaries=(openmotorex)
+		;;
+	*)
+		printf 'Unknown build selection: %s\n' "$profile" >&2
+		usage >&2
+		exit 2
+		;;
+esac
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+build_dir="$root/build/$platform"
+jobs=${CMAKE_BUILD_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}
+
+if [[ $platform == wasm ]]; then
+	if [[ $profile == server ]]; then
+		printf 'The dedicated server is not supported on the wasm platform.\n' >&2
+		exit 2
+	fi
+	configure=(emcmake cmake)
+	server=OFF
+	defaults=(-DMH_BUILD_NETWORK=OFF)
+	if [[ $client == ON ]]; then
+		targets=(wasm-runtime)
+		binaries=(browser-runtime/)
+	else
+		targets=(openmotorex)
+		binaries=(openmotorex.js openmotorex.wasm
+			extract-worker.js extract-workspace.js extract-job.js)
+	fi
+elif [[ $platform == windows ]]; then
+	defaults+=("-DCMAKE_TOOLCHAIN_FILE=$root/cmake/toolchain_mingw64.cmake")
+	for index in "${!binaries[@]}"; do
+		binaries[index]+=.exe
+	done
+fi
+
+applications=(-DMH_BUILD_CLIENT="$client" -DMH_BUILD_SERVER="$server")
+if [[ $platform == wasm && $profile == all ]]; then
+	# Full browser bundles may explicitly omit the optional extractor.
+	defaults+=(-DMH_BUILD_EXTRACT=ON)
+else
+	applications+=(-DMH_BUILD_EXTRACT="$extractor")
+fi
+
+"${configure[@]}" -S "$root" -B "$build_dir" \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DBUILD_TESTING=OFF -DMH_BUILD_TOOLS=OFF -DMH_DEBUG=OFF \
+	"${defaults[@]}" "$@" "${applications[@]}"
+cmake --build "$build_dir" --config Release --parallel "$jobs" \
+	--target "${targets[@]}"
+
+printf '\nBuilt in %s:\n' "$build_dir"
+printf '  %s\n' "${binaries[@]}"

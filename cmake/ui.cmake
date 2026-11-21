@@ -1,0 +1,134 @@
+add_library(mh_ui STATIC
+	src/engine/ui/atlas.c
+	src/engine/ui/font_atlas.c
+	src/engine/ui/draw.c
+	src/engine/ui/hud.c
+	src/engine/ui/hud_label.c
+	src/engine/ui/software_hud.c
+	src/engine/ui/software_hud_map.c
+	src/engine/ui/software_hud_text.c
+	src/engine/ui/messages.c
+	src/engine/ui/hud_messages.c
+	src/engine/ui/hud_map.c
+	src/engine/ui/race_gaps.c
+	src/engine/ui/hud_gaps.c
+	src/engine/ui/hud_secrets.c
+	src/engine/ui/tron_draw.c
+	src/engine/ui/tron_intro.c
+	src/engine/ui/retro.c
+	src/engine/ui/retro_validate.c
+	src/engine/ui/results.c
+	src/engine/ui/results_screen.c
+	src/engine/ui/pause.c
+	src/engine/ui/pause_draw.c
+	src/engine/ui/pause_layout.c
+	src/engine/ui/menu.c
+	src/engine/ui/menu_choices.c
+	src/engine/ui/menu_modal.c
+	src/engine/ui/menu_position.c
+	src/engine/ui/menu_art.c
+	src/engine/ui/menu_palette.c
+	src/engine/ui/menu_sine.c
+	src/engine/ui/menu_sprite.c
+	src/engine/ui/menu_needle.c
+	src/engine/ui/menu_triangles.c
+	src/engine/ui/race_info.c
+	src/engine/ui/race_info_layout.c
+	src/engine/ui/loading_screen.c
+	src/engine/ui/loading_art.c
+	src/engine/ui/loading_resize.c
+	src/engine/ui/loading_draw.c
+	src/engine/ui/chat_draw.c
+	src/engine/ui/lobby_console.c
+	src/engine/ui/lobby_roster.c
+	src/engine/ui/menu_lines.c
+	src/engine/ui/menu_gear.c
+	src/engine/ui/menu_background.c
+	src/engine/ui/menu_background_draw.c
+	src/engine/ui/menu_wire.c
+	src/engine/ui/menu_backdrop.c
+	src/engine/ui/menu_main.c
+	src/engine/ui/menu_noise.c
+	src/engine/ui/menu_dialog.c
+	src/engine/ui/menu_dialog_draw.c
+	src/engine/ui/menu_single.c
+	src/engine/ui/menu_single_draw.c
+	src/engine/ui/menu_text.c
+	src/engine/ui/menu_race_setup.c
+	src/engine/ui/menu_car_setup.c
+	src/engine/ui/menu_sound.c
+	src/engine/ui/menu_sound_draw.c
+	src/engine/ui/menu_options.c
+	src/engine/ui/menu_graphics.c
+	src/engine/ui/menu_graphics_fps.c
+	src/engine/ui/menu_personal.c
+	src/engine/ui/menu_personal_draw.c
+	src/engine/ui/menu_credits.c
+	src/engine/ui/menu_rankings.c
+	src/engine/ui/menu_rankings_draw.c
+	src/engine/ui/opening_videos.c
+	src/engine/ui/attract.c
+	src/engine/ui/menu_multi.c
+	src/engine/ui/menu_multi_draw.c
+	src/engine/ui/menu_controls.c
+	src/engine/ui/menu_controls_draw.c
+	src/engine/ui/menu_slider.c
+	src/engine/ui/menu_graphics_draw.c
+	src/engine/ui/menu_ghost.c
+	src/engine/ui/menu_recording.c
+	src/engine/ui/menu_recording_draw.c
+	src/engine/ui/menu_league.c
+	src/engine/ui/menu_league_draw.c
+	src/engine/ui/menu_league_info.c
+	src/engine/ui/menu_demo_catalog.c
+	src/engine/ui/menu_list.c
+	src/engine/ui/menu_ghost_draw.c
+	src/engine/ui/menu_preview.c
+	src/engine/ui/menu_car_draw.c
+	src/engine/ui/menu_catalog.c
+	src/engine/ui/menu_unlocks.c
+	src/engine/ui/menu_gauge.c
+	src/engine/ui/menu_thumbnail.c
+	src/engine/ui/menu_digits.c
+	src/engine/ui/menu_race_draw.c)
+target_link_libraries(mh_ui
+	PUBLIC
+		mh_sim
+		mh_input
+		mh_settings
+		mh_render_common
+	PRIVATE
+		mh_image_loading
+		mh_lap_presets
+		mh_sprite_collections)
+mh_c89(mh_ui)
+
+add_library(mh_menu_layout_loading STATIC src/engine/ui/layout_load.c)
+target_link_libraries(mh_menu_layout_loading PUBLIC mh_error mh_resource_source)
+mh_c89(mh_menu_layout_loading)
+
+add_library(mh_ui_assets STATIC
+	src/engine/ui/software_hud_assets.c
+	src/engine/ui/hud_assets.c
+	src/engine/ui/hud_sprite_assets.c
+	src/engine/ui/loading_assets.c
+	src/engine/ui/results_assets.c)
+target_include_directories(mh_ui_assets PUBLIC src)
+target_link_libraries(mh_ui_assets
+	PUBLIC
+		mh_profile_loading
+		mh_ui
+		mh_resource_source
+	PRIVATE
+		mh_image_loading
+		mh_font_loading
+		mh_sprite_collections)
+mh_c89(mh_ui_assets)
+
+add_library(mh_lobby_ui STATIC
+	src/engine/ui/lobby_backdrop.c
+	src/engine/ui/lobby_session.c
+	src/engine/ui/lobby_screen.c
+	src/engine/ui/lobby_settings.c)
+target_link_libraries(mh_lobby_ui PUBLIC mh_ui mh_net PRIVATE mh_image_loading)
+mh_c89(mh_lobby_ui)

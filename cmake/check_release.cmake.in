@@ -1,0 +1,38 @@
+set(unavailable [==[@mh_release_unavailable@]==])
+set(inputs [==[@mh_release_inputs@]==])
+
+if(unavailable)
+	list(JOIN unavailable "\n" reason)
+	message(FATAL_ERROR "Cannot package OpenMH:\n${reason}")
+endif()
+
+foreach(input IN LISTS inputs)
+	if(NOT EXISTS "${input}" OR IS_DIRECTORY "${input}")
+		message(FATAL_ERROR
+			"Missing OpenMH runtime packaging input: ${input}")
+	endif()
+endforeach()
+
+if(NOT "@mh_release_license_bundle@" STREQUAL "")
+	configure_file("@mh_release_license_bundle@"
+		"@CMAKE_BINARY_DIR@/licenses.txt" COPYONLY)
+	return()
+endif()
+
+set(notices [==[@mh_release_notices@]==])
+set(combined "")
+
+foreach(notice IN LISTS notices)
+	file(READ "${notice}" text)
+	get_filename_component(name "${notice}" NAME)
+
+	if(notice STREQUAL "@CMAKE_SOURCE_DIR@/LICENSE.md")
+		set(name OpenMH)
+	endif()
+
+	string(LENGTH "${name}" length)
+	string(REPEAT "=" ${length} underline)
+	string(APPEND combined "${name}\n${underline}\n\n${text}\n\n")
+endforeach()
+
+file(WRITE "@CMAKE_BINARY_DIR@/licenses.txt" "${combined}")

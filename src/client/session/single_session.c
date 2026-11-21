@@ -1,0 +1,532 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "client/application/activity.h"
+#include "client/race/race.h"
+#include "client/session/demo_recording.h"
+#include "client/session/loading.h"
+#include "client/session/playback_hud.h"
+#include "client/session/race_options.h"
+#include "client/session/single_session.h"
+#include "engine/audio/race_playback.h"
+#include "engine/clock/game_timer.h"
+#include "engine/core/error.h"
+#include "engine/simulation/tick_clock.h"
+#include "engine/storage/recording_path.h"
+#include "interfaces/storage/data_directory.h"
+
+#define RECORDING_PATH_SIZE 1024
+
+struct single_session {
+	struct mh_single_control	*control;
+	struct mh_race_context		race_context;
+	struct mh_field			field;
+	struct mh_single_selection	selection;
+	struct mh_demo_recording	*recording;
+	struct mh_playback_hud		playback_hud;
+	struct mh_settings		*settings;
+	struct mh_race_session_hooks	race_hooks;
+	struct mh_race_results_handler	results_handler;
+	struct mh_audio_options		audio_options;
+	struct mh_race_loop		*race_loop;
+	struct mh_error			race_error;
+	char				race_error_text[MH_ACTIVITY_ERROR_SIZE];
+	unsigned long			*random;
+	int	*quit_requested, results_accepted, race_stopped;
+	struct mh_demo_file		**take;
+};
+
+static enum mh_error_code
+advance_race(void *context, const struct mh_engine_input *controls,
+	long double elapsed, enum mh_frame_action action, unsigned int *steps,
+	int *done, struct mh_error *error_out)
+{
+	struct single_session *session;
+	struct mh_error error;
+	enum mh_error_code status;
+
+	session = (struct single_session *)context;
+	*done = 0;
+
+	if (mh_demo_recording_active(session->recording)) {
+		status = mh_demo_recording_advance(session->recording,
+			&session->field, controls, elapsed, action, steps,
+			&session->race_context.scene.visuals.particle_system
+				.random,
+			&error);
+
+		status = mh_demo_recording_recover_write_error(
+			session->recording, &session->settings->record_race,
+			status, &error);
+	} else
+		status = mh_field_advance_random(&session->field, controls,
+			elapsed, action, steps,
+			&session->race_context.scene.visuals.particle_system
+				.random,
+			&error);
+
+	if (status != MH_ERROR_NONE)
+		return mh_error_forward(error_out, &error);
+
+	return mh_playback_hud_frame(&session->playback_hud,
+		&session->race_context.hud,
+		session->race_context.scene.assets.view_width, &session->field,
+		NULL, session->recording, error_out);
+}
+
+static enum mh_error_code
+restart_race(void *context, struct mh_error *error_out)
+{
+	struct single_session *session;
+	enum mh_error_code status;
+
+	session = (struct single_session *)context;
+	status = session->recording == NULL
+		? mh_field_reset(&session->field, 1, error_out)
+		: mh_demo_recording_restart(
+			session->recording, &session->field, error_out);
+
+	if (status == MH_ERROR_NONE)
+		mh_playback_hud_restart(
+			&session->playback_hud, &session->field);
+
+	return status;
+}
+
+static enum mh_error_code
+save_records(void *context, const struct mh_standings *standings,
+	struct mh_error *error_out)
+{
+	struct single_session *session;
+
+	enum mh_error_code status;
+
+	session = (struct single_session *)context;
+	status = mh_race_records_save(
+		&session->race_context, &session->field, error_out);
+
+	if (status == MH_ERROR_NONE && session->control != NULL)
+		session->control->results = *standings;
+
+	return status;
+}
+
+static void
+apply_hud(void *context, struct mh_hud_state *state)
+{
+	const struct single_session *session;
+
+	session = (const struct single_session *)context;
+	mh_playback_hud_state(&session->playback_hud, state);
+}
+
+static enum mh_error_code
+add_message(void *context, const char *text, const char *suffix,
+	unsigned long color, struct mh_error *error_out)
+{
+	struct single_session *session;
+
+	session = (struct single_session *)context;
+
+	return mh_playback_hud_message(&session->playback_hud,
+		&session->race_context.hud, text, suffix, color, error_out);
+}
+
+static void
+close_session(void *context)
+{
+	struct single_session *session;
+
+	session = (struct single_session *)context;
+
+	if (session->race_loop != NULL) {
+		mh_race_loop_close(session->race_loop);
+		*session->random = session->field.cars[0].frame.fixed_rate
+			? session->field.ai_random
+			: session->race_context.scene.visuals.particle_system
+				.random;
+	}
+
+	mh_demo_recording_abort(session->recording);
+	mh_race_context_free(&session->race_context);
+	free(session);
+}
+
+static enum mh_app_status
+step_session(void *context, unsigned long *delay, struct mh_error *failure)
+{
+	struct single_session *session;
+	enum mh_app_status app_status;
+	struct mh_error error;
+	struct mh_error save_error;
+	enum mh_error_code status, save_status;
+	int success;
+
+	session = (struct single_session *)context;
+
+	if (session->race_loop != NULL && !session->race_stopped) {
+		if (session->control != NULL && session->control->leave) {
+			session->control->leave = 0;
+
+			if (mh_race_loop_leave(session->race_loop, failure) !=
+				MH_ERROR_NONE)
+				return MH_APP_FAILED;
+		}
+
+		app_status = mh_race_loop_step(session->race_loop);
+		*delay = mh_race_loop_delay(session->race_loop);
+
+		if (session->control != NULL)
+			session->control->finished =
+				session->field.cars[0].race.finished;
+
+		if (app_status == MH_APP_RUNNING)
+			return MH_APP_RUNNING;
+
+		session->race_stopped = 1;
+
+		/* Keep finalization after the original terminal-frame delay. */
+		if (*delay != 0)
+			return MH_APP_RUNNING;
+	}
+
+	if (session->race_loop != NULL) {
+		mh_race_loop_error(session->race_loop, &session->race_error);
+		mh_error_copy(&session->race_error, &session->race_error,
+			session->race_error_text,
+			sizeof(session->race_error_text));
+	}
+
+	success = session->race_loop != NULL &&
+		mh_race_loop_close(session->race_loop);
+	session->race_loop = NULL;
+	error = mh_success;
+	status = MH_ERROR_NONE;
+	*session->random = session->field.cars[0].frame.fixed_rate
+		? session->field.ai_random
+		: session->race_context.scene.visuals.particle_system.random;
+
+	if (!success)
+		status = mh_error_forward(&error, &session->race_error);
+
+	save_status = mh_race_records_save(
+		&session->race_context, &session->field, &save_error);
+
+	if (status == MH_ERROR_NONE) {
+		status = save_status;
+		error = save_error;
+	}
+
+	if (mh_demo_recording_write_error(session->recording, NULL) !=
+		MH_ERROR_NONE) {
+		mh_demo_recording_abort(session->recording);
+		session->recording = NULL;
+	}
+
+	if (status == MH_ERROR_NONE && !*session->quit_requested &&
+		session->recording != NULL) {
+		status = mh_demo_recording_prepare(session->recording,
+			&session->field, session->take, &error);
+		session->recording = NULL;
+	}
+
+	if (status == MH_ERROR_NONE) {
+		printf("Race return: completed %d, quit %d\n",
+			session->results_accepted, *session->quit_requested);
+		fflush(stdout);
+	}
+
+	*failure = error;
+
+	return status == MH_ERROR_NONE ? MH_APP_DONE : MH_APP_FAILED;
+}
+
+static const struct mh_activity_ops session_ops = {step_session, close_session};
+
+static enum mh_error_code
+prepare_recording(struct single_session *session, const char *asset_root,
+	const struct mh_session_options *options, struct mh_error *error_out)
+{
+	struct mh_data_directory *recording_directory;
+	const char *recording_name;
+	char recording_path[RECORDING_PATH_SIZE];
+	enum mh_error_code status;
+
+	recording_directory = NULL;
+	recording_name = NULL;
+	status = mh_recording_path_from(options->user_data,
+		options->recording_directory, recording_path, error_out);
+
+	if (status == MH_ERROR_NONE)
+		status = mh_recording_destination_open_from(options->user_data,
+			asset_root, recording_path, &recording_directory,
+			&recording_name, error_out);
+
+	if (status == MH_ERROR_NONE)
+		status = mh_demo_recording_open_in(recording_directory,
+			recording_name, &session->field,
+			session->selection.profiles, options->controls,
+			&session->recording, error_out);
+
+	if (status != MH_ERROR_NONE)
+		mh_data_directory_close(recording_directory);
+
+	return status;
+}
+
+static enum mh_error_code
+prepare_race(struct single_session *session, const char *asset_root,
+	const struct mh_profile_catalog *catalog,
+	const struct mh_horn_catalog *horns,
+	const struct mh_session_options *options,
+	struct mh_session_loading *loading, struct mh_error *error_out)
+{
+	struct mh_settings *settings;
+	enum mh_error_code status;
+
+	settings = session->settings;
+	status = mh_single_setup_load_observed_from(options->horn_source,
+		options->material_source, options->env_sound_source,
+		options->catalog_source, options->navigation_source,
+		options->animation_source, options->atlas_source,
+		options->model_decoder, options->world_decoder,
+		options->collision_source, options->sprite_source,
+		options->font_source, options->image_source,
+		options->image_decoder, options->portrait_decoder,
+		options->resources, asset_root, catalog, horns, settings, 1,
+		session->random, mh_session_loading_observer(loading),
+		mh_debug_texture_budget(&options->debug),
+		&session->race_context, &session->field, &session->selection,
+		error_out);
+
+	if (status == MH_ERROR_NONE)
+		session->race_context.controls = options->controls;
+
+	if (status == MH_ERROR_NONE)
+		status = mh_race_scores_bind(&session->race_context,
+			settings->game_type, settings->difficulty,
+			options->record_class, settings->player_name,
+			options->score_history, error_out);
+
+	if (status == MH_ERROR_NONE && !options->no_records)
+		status = mh_race_records_open_from(options->user_data,
+			&session->race_context, &session->field,
+			options->record_directory, error_out);
+
+	if (status == MH_ERROR_NONE)
+		status = mh_field_simulation_rate(&session->field,
+			options->simulation_rate ? options->simulation_rate
+						: MH_SIM_RATE_DEFAULT,
+			error_out);
+
+	if (status == MH_ERROR_NONE && settings->record_race)
+		status = prepare_recording(
+			session, asset_root, options, error_out);
+
+	if (status != MH_ERROR_NONE)
+		return status;
+
+	mh_playback_hud_init(&session->playback_hud);
+
+	return mh_playback_hud_frame(&session->playback_hud,
+		&session->race_context.hud,
+		session->race_context.scene.assets.view_width, &session->field,
+		NULL, session->recording, error_out);
+}
+
+static void
+trace_launch(const struct single_session *session,
+	const struct mh_debug_options *debug)
+{
+	const struct mh_settings *settings;
+	unsigned int i;
+
+	settings = session->settings;
+	printf("Race launch: mode %u, car %u, track %u, laps %u, entrants %u, human slot %u\n",
+		settings->game_type, session->selection.cars[0],
+		session->selection.track, settings->laps,
+		session->selection.count, session->selection.slots[0]);
+
+	if (debug->profile_trace)
+		for (i = 1; i < session->selection.count; i++)
+			printf("Race profile: slot %u, source %u, name %s, aggression %.6f, eagerness %.6f, horn %s\n",
+				i, session->selection.profile_sources[i],
+				session->race_context.results.profiles[i].name,
+				(double)session->field.cars[i].ai_parameters[0],
+				(double)session->field.cars[i].ai_parameters[1],
+				session->audio_options.horns[i]);
+
+	fflush(stdout);
+}
+
+static enum mh_error_code
+configure_race(struct single_session *session,
+	const struct mh_session_options *options, struct mh_error *error_out)
+{
+	enum mh_error_code status;
+	unsigned int i;
+
+	memset(&session->audio_options, 0, sizeof(session->audio_options));
+	memset(&session->race_hooks, 0, sizeof(session->race_hooks));
+	session->audio_options.music_root = options->music_root;
+
+	status = mh_session_course_music(
+		options, &session->race_context.scene.assets, error_out);
+
+	if (status != MH_ERROR_NONE)
+		return status;
+
+	for (i = 0; i < session->selection.count; i++)
+		session->audio_options.horns[i] =
+			session->selection.profiles[i].horn;
+
+	session->race_hooks.context = session;
+	session->race_hooks.external_ui = session->control != NULL;
+	session->race_hooks.pause_with_ui = 1;
+	session->race_hooks.advance = advance_race;
+	session->race_hooks.restart = restart_race;
+	session->race_hooks.hud = apply_hud;
+	session->race_hooks.message = add_message;
+	session->results_handler.context = session;
+	session->results_handler.commit = save_records;
+
+	return mh_error_set(error_out, MH_ERROR_NONE, NULL);
+}
+
+static enum mh_error_code
+open_race_loop(struct single_session *session, const char *asset_root,
+	const struct mh_session_options *options,
+	const struct mh_session_loading *loading, struct mh_error *error_out)
+{
+	struct mh_race_loop_options race;
+
+	mh_session_race_options(options, loading->view, &race);
+	race.root = asset_root;
+	race.audio_options = &session->audio_options;
+	race.session = &session->race_hooks;
+	race.result_handler = &session->results_handler;
+	race.completed = &session->results_accepted;
+	race.quit = session->quit_requested;
+
+	return mh_race_loop_open(&session->race_context, &session->field, &race,
+		&session->race_loop, error_out);
+}
+
+enum mh_error_code
+mh_single_session_open(const char *asset_root,
+	const struct mh_profile_catalog *catalog,
+	const struct mh_horn_catalog *horns, struct mh_settings *settings,
+	const struct mh_session_options *options, unsigned long *random,
+	int *quit_requested, struct mh_demo_file **take,
+	struct mh_activity *output, struct mh_error *error_out)
+{
+	struct single_session *session;
+	struct mh_session_loading loading;
+	struct mh_error error;
+	enum mh_error_code status;
+
+	if (take != NULL)
+		*take = NULL;
+
+	if (asset_root == NULL || settings == NULL || options == NULL ||
+		options->timer == NULL || options->windows == NULL ||
+		options->inputs == NULL || options->renderers == NULL ||
+		options->resources == NULL || random == NULL ||
+		quit_requested == NULL || take == NULL || output == NULL ||
+		mh_activity_is_open(output))
+		return mh_error_set(error_out, MH_ERROR_INVALID,
+			"invalid single-player session");
+
+	*quit_requested = 0;
+	session = (struct single_session *)calloc(1, sizeof(*session));
+
+	if (session == NULL)
+		return mh_error_set(error_out, MH_ERROR_MEMORY,
+			"out of memory creating single-player session");
+
+	session->random = random;
+	session->quit_requested = quit_requested;
+	session->take = take;
+	session->settings = settings;
+	session->control = options->single_control;
+	mh_session_loading_init(&loading, asset_root, options);
+	status = mh_session_loading_begin(&loading, settings->track + 1,
+		settings->laps, settings, &error);
+
+	if (status != MH_ERROR_NONE)
+		goto done;
+
+	status = prepare_race(
+		session, asset_root, catalog, horns, options, &loading, &error);
+
+	if (status != MH_ERROR_NONE)
+		goto done;
+
+	status = configure_race(session, options, &error);
+
+	if (status != MH_ERROR_NONE)
+		goto done;
+
+	trace_launch(session, &options->debug);
+
+	status = open_race_loop(session, asset_root, options, &loading, &error);
+	mh_session_loading_close(&loading);
+
+	if (status != MH_ERROR_NONE) {
+		mh_error_copy(&session->race_error, &error,
+			session->race_error_text,
+			sizeof(session->race_error_text));
+		fprintf(stderr, "Race: %s\n", error.message);
+	}
+
+	if (status != MH_ERROR_NONE && session->control != NULL) {
+		/*
+		 * Retain the shared record-save boundary even on renderer
+		 * failure.
+		 */
+		(void)mh_race_records_save(
+			&session->race_context, &session->field, NULL);
+		goto done;
+	}
+
+	/*
+	 * Even renderer startup failure crosses the original record-save
+	 * boundary.
+	 */
+	status = mh_activity_start(output, session, &session_ops, &error);
+
+	if (status == MH_ERROR_NONE)
+		return mh_error_set(error_out, MH_ERROR_NONE, NULL);
+
+done:
+	mh_session_loading_close(&loading);
+	close_session(session);
+
+	return mh_error_forward(error_out, &error);
+}
+
+enum mh_error_code
+mh_single_session_run(const char *asset_root,
+	const struct mh_profile_catalog *catalog,
+	const struct mh_horn_catalog *horns, struct mh_settings *settings,
+	const struct mh_session_options *options, unsigned long *random,
+	int *quit_requested, struct mh_demo_file **take,
+	struct mh_error *error_out)
+{
+	struct mh_activity activity;
+	enum mh_error_code status;
+
+	mh_activity_init(&activity);
+	status = mh_single_session_open(asset_root, catalog, horns, settings,
+		options, random, quit_requested, take, &activity, error_out);
+
+	if (status != MH_ERROR_NONE)
+		return status;
+
+	status = mh_activity_run_with_clock(
+		&activity, options->timer->source, error_out);
+	mh_activity_close(&activity);
+
+	return status;
+}

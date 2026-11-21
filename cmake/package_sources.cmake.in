@@ -1,0 +1,5 @@
+# Keep the matching sources beside the runtime download, outside its archive.
+configure_file("@mh_release_source_archive@"
+	"${CPACK_PACKAGE_DIRECTORY}/dependency-sources.tar.gz" COPYONLY)
+message(STATUS
+	"Dependency sources: ${CPACK_PACKAGE_DIRECTORY}/dependency-sources.tar.gz")

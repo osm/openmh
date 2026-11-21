@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build supplied sources; callers own download verification and caching.
+if [[ $# != 5 || ${1:-} == --help || ${1:-} == -h ]]; then
+	cat <<'HELP'
+Usage: scripts/build_dependency linux|windows|wasm NAME SOURCE BUILD PREFIX
+
+Build one dependency from an unpacked source release into PREFIX.
+BUILD must be a separate directory. No sources are downloaded.
+Use the versions and checksums in docker/sources.txt.
+
+Linux/Windows: zlib, sdl, unshield, opus, vpx, ffmpeg, openssl.
+Wasm: zlib, sdl, unshield, opus, vpx, ffmpeg; activate Emscripten first.
+Build Opus and VP9 before FFmpeg, installing them into the same prefix.
+Set CMAKE_BUILD_PARALLEL_LEVEL to limit build jobs (default: 4).
+HELP
+	[[ ${1:-} == --help || ${1:-} == -h ]] && exit 0
+	exit 2
+fi
+
+platform=$1
+name=$2
+case "$platform" in
+	linux|windows|wasm) ;;
+	*)
+		printf 'Unknown dependency platform: %s\n' "$platform" >&2
+		exit 2
+		;;
+esac
+
+case "$platform:$name" in
+	linux:openssl|windows:openssl) ;;
+	*:zlib|*:sdl|*:unshield|*:opus|*:vpx|*:ffmpeg) ;;
+	*)
+		printf 'Unsupported dependency for %s: %s\n' "$platform" "$name" >&2
+		exit 2
+		;;
+esac
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+source_dir=$(cd -- "$3" && pwd)
+mkdir -p -- "$4" "$5"
+build_dir=$(cd -- "$4" && pwd)
+prefix=$(cd -- "$5" && pwd)
+cd -- "$build_dir"
+
+jobs=${CMAKE_BUILD_PARALLEL_LEVEL:-4}
+export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
+export PKG_CONFIG_PATH=
+
+cmake_options=(
+	-G Ninja
+	"-DCMAKE_INSTALL_PREFIX=$prefix"
+	"-DCMAKE_PREFIX_PATH=$prefix"
+	-DCMAKE_BUILD_TYPE=Release
+	-DCMAKE_INSTALL_LIBDIR=lib
+)
+configure_options=()
+cmake_command=(cmake)
+if [[ $platform == windows ]]; then
+	cmake_options+=("-DCMAKE_TOOLCHAIN_FILE=$root/cmake/toolchain_mingw64.cmake"
+		"-DCMAKE_FIND_ROOT_PATH=$prefix")
+	configure_options+=(--host=x86_64-w64-mingw32)
+elif [[ $platform == wasm ]]; then
+	cmake_command=(emcmake cmake)
+	cmake_options+=("-DCMAKE_FIND_ROOT_PATH=$prefix")
+fi
+
+build_cmake()
+{
+	"${cmake_command[@]}" -S "$source_dir" -B . "${cmake_options[@]}" "$@"
+	cmake --build . --parallel "$jobs"
+	cmake --install .
+}
+
+build_zlib()
+{
+	build_cmake -DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_TESTING=OFF
+}
+
+build_sdl()
+{
+	local sdl_options=()
+
+	# SDL discovers native window/audio APIs through the system pkg-config paths.
+	if [[ $platform == linux ]]; then
+		unset PKG_CONFIG_LIBDIR
+	elif [[ $platform == wasm ]]; then
+		# The browser runtime also runs without shared Wasm memory.
+		sdl_options=(-DSDL_PTHREADS=OFF)
+	fi
+	build_cmake "${sdl_options[@]}" -DSDL_SHARED=OFF -DSDL_STATIC=ON \
+		-DSDL_TESTS=OFF -DSDL_TEST_LIBRARY=OFF
+}
+
+build_unshield()
+{
+	local archiver=ar object=md5c.c.o
+	local zlib_options=(-DZLIB_USE_STATIC_LIBS=ON)
+	if [[ $platform == windows ]]; then
+		archiver=x86_64-w64-mingw32-ar
+		object=md5c.c.obj
+	elif [[ $platform == wasm ]]; then
+		archiver=emar
+		zlib_options=("-DZLIB_INCLUDE_DIR=$prefix/include"
+			"-DZLIB_LIBRARY=$prefix/lib/libz.a")
+	fi
+	"${cmake_command[@]}" -S "$source_dir" -B . "${cmake_options[@]}" \
+		-DBUILD_STATIC=ON -DBUILD_TESTING=OFF -DCMAKE_C_STANDARD=11 \
+		-DUSE_OUR_OWN_MD5=ON -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON \
+		"${zlib_options[@]}"
+	cmake --build . --parallel "$jobs" --target libunshield
+	# Upstream passes MD5 as a link input, which a static archive omits.
+	"$archiver" rs lib/libunshield.a "lib/md5/CMakeFiles/md5.dir/$object"
+	mkdir -p "$prefix/include" "$prefix/lib"
+	cp "$source_dir/lib/libunshield.h" "$prefix/include/"
+	cp lib/libunshield.a "$prefix/lib/"
+}
+
+build_opus()
+{
+	local configure=("$source_dir/configure")
+	local opus_options=(--with-pic)
+
+	if [[ $platform == wasm ]]; then
+		configure=(emconfigure "$source_dir/configure")
+		opus_options=(--host=wasm32-unknown-emscripten --disable-asm
+			--disable-rtcd --disable-intrinsics CFLAGS=-O3)
+	fi
+	"${configure[@]}" "${configure_options[@]}" "${opus_options[@]}" \
+		--prefix="$prefix" --enable-static --disable-shared \
+		--disable-doc --disable-extra-programs
+	make -j"$jobs"
+	make install
+}
+
+build_vpx()
+{
+	local vpx_target
+	local vpx_options=(--as=nasm --enable-pic)
+
+	if [[ $platform == windows ]]; then
+		export CROSS=x86_64-w64-mingw32-
+		vpx_target=x86_64-win64-gcc
+	elif [[ $platform == wasm ]]; then
+		export CC=emcc CXX=em++ AR=emar LD=emcc NM=emnm RANLIB=emranlib
+		vpx_target=generic-gnu
+		# Generic C keeps the worker independent of browser SIMD/thread support.
+		vpx_options=(--disable-vp9-decoder --disable-multithread
+			--disable-runtime-cpu-detect)
+	else
+		vpx_target=x86_64-linux-gcc
+	fi
+	"$source_dir/configure" --target="$vpx_target" --prefix="$prefix" \
+		"${vpx_options[@]}" \
+		--disable-examples --disable-tools --disable-docs --disable-unit-tests \
+		--enable-vp9 --disable-vp8 --disable-vp9-highbitdepth \
+		--enable-static --disable-shared
+	# The outer Makefile starts a separate recursive build for each goal.
+	make -j"$jobs" libvpx.a
+	make vpx.pc
+	make install LIBS=libvpx.a
+}
+
+build_ffmpeg()
+{
+	local ffmpeg_options=()
+
+	if [[ $platform == windows ]]; then
+		ffmpeg_options+=(--target-os=mingw32 --arch=x86_64
+			--cross-prefix=x86_64-w64-mingw32- --enable-cross-compile
+			--disable-pthreads --enable-w32threads)
+	elif [[ $platform == wasm ]]; then
+		ffmpeg_options+=(--enable-cross-compile --target-os=none --arch=wasm32
+			"--cc=$(command -v emcc)" "--cxx=$(command -v em++)"
+			"--ar=$(command -v emar)" "--ranlib=$(command -v emranlib)"
+			"--nm=$(command -v emnm)" --disable-stripping --disable-debug
+			--disable-pthreads --disable-w32threads --disable-os2threads
+			--disable-asm --disable-inline-asm --disable-runtime-cpudetect
+			--enable-avcodec --enable-avformat --enable-avutil
+			--enable-swresample --enable-swscale)
+	fi
+	"$source_dir/configure" --prefix="$prefix" \
+		--pkg-config=pkg-config --pkg-config-flags=--static \
+		--disable-everything --disable-programs --disable-doc --disable-network \
+		--disable-autodetect --disable-avdevice --disable-avfilter \
+		"${ffmpeg_options[@]}" --enable-static --disable-shared \
+		--enable-decoder=opus,vp9,smacker,smackaud,pcm_u8,pcm_s16le \
+		--enable-demuxer=ogg,matroska,smacker --enable-parser=opus,vp9 \
+		--enable-libopus --enable-libvpx --enable-encoder=libopus,libvpx_vp9 \
+		--enable-muxer=ogg,webm --enable-bsf=vp9_superframe
+	make -j"$jobs"
+	make install
+}
+
+build_openssl()
+{
+	local openssl_options
+
+	if [[ $platform == windows ]]; then
+		openssl_options=(mingw64 --cross-compile-prefix=x86_64-w64-mingw32-)
+	else
+		openssl_options=(linux-x86_64)
+	fi
+	"$source_dir/Configure" "${openssl_options[@]}" --prefix="$prefix" \
+		--libdir=lib no-shared no-module no-tests no-docs
+	make -j"$jobs"
+	make install_sw
+}
+
+case "$name" in
+	zlib) build_zlib ;;
+	sdl) build_sdl ;;
+	unshield) build_unshield ;;
+	opus) build_opus ;;
+	vpx) build_vpx ;;
+	ffmpeg) build_ffmpeg ;;
+	openssl) build_openssl ;;
+	*)
+		printf 'Unknown dependency: %s\n' "$name" >&2
+		exit 2
+		;;
+esac

@@ -1,0 +1,22 @@
+#ifndef MH_ASSET_PATHS_DIRECTORIES_H
+#define MH_ASSET_PATHS_DIRECTORIES_H
+
+/* Top-level installed asset directories. Prefixes include the separator. */
+#define MH_ASSET_DATA_DIR "Data"
+#define MH_ASSET_DATA_PREFIX MH_ASSET_DATA_DIR "/"
+#define MH_ASSET_GAME_DIR "Game"
+#define MH_ASSET_GAME_PREFIX MH_ASSET_GAME_DIR "/"
+#define MH_ASSET_CARS_DIR "Cars"
+#define MH_ASSET_CARS_PREFIX MH_ASSET_CARS_DIR "/"
+#define MH_ASSET_TRACKS_DIR "Tracks"
+#define MH_ASSET_TRACKS_PREFIX MH_ASSET_TRACKS_DIR "/"
+#define MH_ASSET_DEMOS_DIR "Demos"
+#define MH_ASSET_DEMOS_PREFIX MH_ASSET_DEMOS_DIR "/"
+#define MH_ASSET_SOUNDS_DIR "Sounds"
+#define MH_ASSET_SOUNDS_PREFIX MH_ASSET_SOUNDS_DIR "/"
+#define MH_ASSET_MUSIC_DIR "Music"
+#define MH_ASSET_MUSIC_PREFIX MH_ASSET_MUSIC_DIR "/"
+#define MH_ASSET_MOVIES_DIR "Movies"
+#define MH_ASSET_MOVIES_PREFIX MH_ASSET_MOVIES_DIR "/"
+
+#endif

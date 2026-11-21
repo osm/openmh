@@ -1,0 +1,29 @@
+#ifndef MH_ASSETS_FONT_LAYOUT_H
+#define MH_ASSETS_FONT_LAYOUT_H
+
+#include "engine/assets/font.h"
+
+/* FNT glyph table and the supported encoded span/row commands. */
+enum {
+	FNT_TABLE_PREFIX_BYTES = 4,
+	FNT_ENTRY_BYTES = 8,
+	FNT_WIDTH_OFFSET = 4,
+	FNT_TABLE_BYTES =
+		FNT_TABLE_PREFIX_BYTES + MH_FONT_GLYPHS * FNT_ENTRY_BYTES,
+	FNT_END = 0xe9,
+	FNT_END_BYTES = 5,
+	FNT_ROW = 0x01,
+	FNT_ROW_SINGLE = 0xf8,
+	FNT_ROW_DOUBLE = 0xf0,
+	FNT_ROW_BYTES = 2,
+	FNT_SPAN_BYTE = 0x88,
+	FNT_SPAN_DWORD = 0x89,
+	FNT_SPAN_WORD_PREFIX = 0x66,
+	FNT_SPAN_QWORD = 0xdd,
+	FNT_SPAN_ADDRESS = 0x58,
+	FNT_SPAN_QWORD_ADDRESS = 0x50,
+	FNT_SPAN_BYTES = 3,
+	FNT_WORD_SPAN_BYTES = 4
+};
+
+#endif

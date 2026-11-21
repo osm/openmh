@@ -1,0 +1,62 @@
+cmake_minimum_required(VERSION 3.21)
+project(OpenMH LANGUAGES C)
+
+# Includes keep source paths and application outputs relative to the project.
+# Subsystems group declarations; each library retains its own dependencies.
+include(cmake/project.cmake)
+include(cmake/zlib.cmake)
+include(cmake/core.cmake)
+include(cmake/assets.cmake)
+include(cmake/images.cmake)
+include(cmake/rendering.cmake)
+include(cmake/gameplay.cmake)
+include(cmake/storage.cmake)
+include(cmake/extractor.cmake)
+include(cmake/ui.cmake)
+include(cmake/audio.cmake)
+include(cmake/video.cmake)
+include(cmake/network.cmake)
+include(cmake/client.cmake)
+include(cmake/server.cmake)
+
+if(WIN32)
+	enable_language(RC)
+	add_library(mh_windows_icon OBJECT cmake/windows_icon.rc)
+	target_include_directories(mh_windows_icon PRIVATE "${CMAKE_SOURCE_DIR}/assets")
+	set_property(SOURCE cmake/windows_icon.rc PROPERTY
+		OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/motor.ico")
+	foreach(application openmotor openmotorsv openmotorex)
+		if(TARGET ${application})
+			target_sources(${application} PRIVATE $<TARGET_OBJECTS:mh_windows_icon>)
+		endif()
+	endforeach()
+endif()
+
+if(MH_DEBUG OR MH_BUILD_TOOLS OR BUILD_TESTING)
+	include(cmake/diagnostics.cmake)
+endif()
+include(cmake/shaders.cmake)
+
+if(EMSCRIPTEN)
+	include(cmake/webgl.cmake)
+endif()
+
+mh_development_targets(cmake/tools.cmake)
+mh_test_targets(cmake/test_graphics.cmake)
+mh_test_targets(cmake/test_network.cmake)
+mh_test_targets(cmake/test_unit.cmake)
+mh_test_targets(cmake/test_profiles.cmake)
+mh_test_targets(cmake/test_extract.cmake)
+mh_test_targets(cmake/test_media.cmake)
+mh_test_targets(cmake/test_render.cmake)
+
+if(EMSCRIPTEN AND BUILD_TESTING)
+	include(cmake/test_browser.cmake)
+endif()
+
+include(cmake/executables.cmake)
+
+if(MH_BUILD_FUZZERS)
+	include(cmake/test_fuzz.cmake)
+endif()
+include(cmake/release.cmake)

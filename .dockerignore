@@ -1,0 +1,19 @@
+# Only build inputs enter the context, including the Windows executable icon.
+**
+!CMakeLists.txt
+!README.md
+!LICENSE.md
+!VERSION
+!.clang-format
+!.dockerignore
+!cmake/
+!src/
+!scripts/
+!tools/
+!tests/
+!docker/
+!assets/motor.ico
+**/__pycache__/**
+**/*.pyc
+**/*.ass
+**/*.ASS
